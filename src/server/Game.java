@@ -1,30 +1,31 @@
 package server;
 
 import com.google.gson.Gson;
+import common.ClientMessage;
+import common.Message;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class Game {
+    private Gson gson;
     private AtomicInteger clientCount;
-    private int roundCount;
+    private int rounds;
     private int tableSize;
-    private Player[] activePlayers;
-    private int currentIndex;
+    private Player[] players;
+    private int playerIndex;
 
-    public Game(int roundCount, int tableSize) {
-        this.roundCount = roundCount;
+    public Game(int rounds, int tableSize) {
+        this.gson = new Gson();
+        this.rounds = rounds;
         this.tableSize = tableSize;
         this.clientCount = new AtomicInteger();
-        this.activePlayers = new Player[tableSize];
-        this.currentIndex = 0;
+        this.players = new Player[tableSize];
+        this.playerIndex = 0;
     }
 
     public Runnable createPlayer(Socket socket) {
@@ -33,12 +34,14 @@ public class Game {
 
     class Player implements Runnable {
         private String uuid;
+        private int points;
         private Socket socket;
         private DataInputStream input;
         private DataOutputStream output;
 
         public Player(Socket socket) {
             try {
+                this.points = 0;
                 this.uuid = UUID.randomUUID().toString();
                 this.socket = socket;
                 this.input = new DataInputStream(socket.getInputStream());
@@ -50,7 +53,6 @@ public class Game {
 
         @Override
         public void run() {
-            System.out.println("Dosao igrac: " + uuid);
             if (clientCount.incrementAndGet() > 6) {
                 denyAccess();
             } else {
@@ -59,17 +61,29 @@ public class Game {
         }
 
         private void play() {
+            sendToClient("approved");
             findFreePlace();
             while (true) {
+                if (players[playerIndex].uuid.equals(uuid)) {
+                    // biram
+                    sendToClient("choose");
+                    var message = getFromClient();
+                    System.out.println(message.getBody());
+                } else {
+                    // pogadjam
+                    sendToClient("guess");
+                    var message = getFromClient();
+                    System.out.println(message.getBody());
+                }
 
             }
         }
 
         private void findFreePlace() {
-            synchronized (activePlayers) {
+            synchronized (players) {
                 for (int i = 0; i < tableSize; i++) {
-                    if (activePlayers[i] == null) {
-                        activePlayers[i] = this;
+                    if (players[i] == null) {
+                        players[i] = this;
                         break;
                     }
                 }
@@ -77,7 +91,27 @@ public class Game {
         }
 
         private void denyAccess() {
-            System.out.println("Probao igrac: " + uuid);
+            sendToClient("denied");
+        }
+
+        private void sendToClient(String body) {
+            Message res = new Message(body);
+            try {
+                output.writeUTF(gson.toJson(res));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        private ClientMessage getFromClient() {
+            ClientMessage message = null;
+            try {
+                String json = input.readUTF();
+                message = gson.fromJson(json, ClientMessage.class);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            return message;
         }
     }
 }
