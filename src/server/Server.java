@@ -26,7 +26,7 @@ public class Server implements Runnable {
             try {
                 Thread.sleep(50);
                 pool = Executors.newFixedThreadPool(poolSize);
-                Game game = new Game(10, 6);
+                Game game = new Game(12, 6);
 
                 Thread resultThread = new Thread(() -> {
                     try {

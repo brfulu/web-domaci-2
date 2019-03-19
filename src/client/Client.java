@@ -39,8 +39,8 @@ public class Client implements Runnable {
         this.input = new DataInputStream(socket.getInputStream());
         this.output = new DataOutputStream(socket.getOutputStream());
         this.gson = new Gson();
-//        this.id = UUID.randomUUID().toString();
-        this.id = Integer.toString(counter.incrementAndGet());
+        this.id = UUID.randomUUID().toString();
+//        this.id = Integer.toString(counter.incrementAndGet());
     }
 
     private void disconnect() {
