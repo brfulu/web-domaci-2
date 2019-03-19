@@ -1,38 +1,46 @@
 package client;
 
 import com.google.gson.Gson;
-import common.ClientMessage;
-import common.Message;
+import common.*;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * [Client] REQUEST_CHAIR id
+ * [Server] OK/DENIED
+ *
+ * [Server] WAIT Waiting for other players to bid
+ * [Server] DRAW Draw a stick
+ * [Client] DRAW stick_id
+ * [Server] OK/DENIED
+ *
+ * [Server] WAIT Waiting for players to arrive
+ * [Server] BID Place a bid normal/short
+ * [Client] BID normal/short
+ * [Server] OK/DENIED
+ */
 
 public class Client implements Runnable {
-    private Gson gson;
-    private String host;
-    private int port;
     private Socket socket;
     private DataInputStream input;
     private DataOutputStream output;
+    private Gson gson;
 
-    public Client(String host, int port) {
-        gson = new Gson();
-        this.host = host;
-        this.port = port;
-    }
+    private String id;
+    public static AtomicInteger counter = new AtomicInteger();
 
-    private void connect(String host, int port) {
-        try {
-            socket = new Socket(host, port);
-            input = new DataInputStream(socket.getInputStream());
-            output = new DataOutputStream(socket.getOutputStream());
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    public Client() throws IOException {
+        this.socket = new Socket("localhost", 2019);
+        this.input = new DataInputStream(socket.getInputStream());
+        this.output = new DataOutputStream(socket.getOutputStream());
+        this.gson = new Gson();
+//        this.id = UUID.randomUUID().toString();
+        this.id = Integer.toString(counter.incrementAndGet());
     }
 
     private void disconnect() {
@@ -43,66 +51,74 @@ public class Client implements Runnable {
         }
     }
 
-    public void play() {
-        while (true) {
-            Message message = getFromServer();
-            if (message.getBody().equals("choose")) {
-                sendToServer("3");
-            } else if (message.getBody().equals("guess")) {
-                sendToServer("normal");
-            }
-            break;
-        }
-    }
-
-    private void sendToServer(String body) {
-        Message message = new Message(body);
-        try {
-            String json = gson.toJson(message);
-            output.writeUTF(json);
-            System.out.println(json);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private Message getFromServer() {
-        Message message = null;
-        try {
-            String json = input.readUTF();
-            System.out.println(json);
-            message = gson.fromJson(json, Message.class);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return message;
-    }
-
     @Override
     public void run() {
-        int attempts = 0;
-        while (attempts < 5) {
-            try {
-                Thread.sleep(500);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-            connect(host, port);
-            Message message = getFromServer();
-            if (message.getBody().equals("approved")) {
-                play();
+        sendRequest(RequestIntent.REQUEST_CHAIR, null);
+        var response = getResponse();
+        if (response.getStatus().equals(Status.OK)) {
+            play();
+        }
+        disconnect();
+    }
+
+    public void play() {
+        while (true) {
+            Message message = getMessage();
+            MessageType type = message.getType();
+            if (type.equals(MessageType.WAIT)) {
+              //  System.out.println(id + " " + message.getBody());
+            } else if (type.equals(MessageType.BID)) {
+                // BID
+                StickType stickType = Helper.randomBoolean() ? StickType.NORMAL : StickType.SHORT;
+                System.out.println(id + " BID " + stickType);
+                sendRequest(RequestIntent.BID, stickType);
+            } else if (type.equals(MessageType.DRAW)) {
+                // DRAW
+                System.out.println(message.getBody());
+                int stickCount = Integer.parseInt(message.getBody().replaceAll("[^0-9]", ""));
+                int stickIndex = Helper.randomInt(1, stickCount);
+                System.out.println(id + " DRAW " + stickIndex);
+                sendRequest(RequestIntent.DRAW, stickIndex);
+                System.out.println();
+            } else if (type.equals(MessageType.EJECTED)) {
+                // EJECTED
+                System.out.println(id + " EJECTED");
+                System.out.println();
                 break;
+            } else {
+                // ERROR
+                System.out.println(id + " Error message!" + " " + type);
             }
-            disconnect();
-            attempts++;
         }
     }
 
-    public static void main(String[] args) {
-        int clientCount = 7;
-        ExecutorService pool = Executors.newFixedThreadPool(20);
-        for (int i = 0; i < clientCount; i++) {
-            pool.execute(new Client("localhost", 2019));
+    private void sendRequest(RequestIntent intent, Object data) {
+        Request request = new Request(this.id, intent, data);
+        try {
+            String json = gson.toJson(request);
+            output.writeUTF(json);
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
         }
+    }
+
+    private Response getResponse() {
+        try {
+            String json = input.readUTF();
+            return gson.fromJson(json, Response.class);
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
+        }
+        return null;
+    }
+
+    private Message getMessage() {
+        try {
+            String json = input.readUTF();
+            return gson.fromJson(json, Message.class);
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
+        }
+        return null;
     }
 }

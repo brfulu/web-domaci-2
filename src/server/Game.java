@@ -1,117 +1,154 @@
 package server;
 
-import com.google.gson.Gson;
-import common.ClientMessage;
-import common.Message;
+import common.Helper;
+import common.StickType;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.net.Socket;
-import java.util.UUID;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class Game {
-    private Gson gson;
     private AtomicInteger clientCount;
-    private int rounds;
-    private int tableSize;
+    private volatile int rounds;
+    private final int tableSize;
     private Player[] players;
-    private int playerIndex;
+    private volatile int playerIndex;
+    private StickType[] sticks;
+
+    private CyclicBarrier fullTableBarrier;
+    private CountDownLatch bidsLatch;
+    private CountDownLatch gameLatch;
 
     public Game(int rounds, int tableSize) {
-        this.gson = new Gson();
         this.rounds = rounds;
         this.tableSize = tableSize;
         this.clientCount = new AtomicInteger();
         this.players = new Player[tableSize];
         this.playerIndex = 0;
+        this.fullTableBarrier = new CyclicBarrier(tableSize);
+        this.bidsLatch = new CountDownLatch(tableSize - 1);
+        this.gameLatch = new CountDownLatch(rounds);
+        shuffleSticks();
     }
 
-    public Runnable createPlayer(Socket socket) {
-        return new Player(socket);
+    private void shuffleSticks() {
+        sticks = new StickType[tableSize];
+        for (int i = 0; i < tableSize; i++) {
+            sticks[i] = StickType.NORMAL;
+        }
+        int shortIndex = Helper.randomInt(0, tableSize - 1);
+        sticks[shortIndex] = StickType.SHORT;
+        for (int i = 0; i < tableSize; i++) {
+            System.out.print(sticks[i] + " ");
+        }
+        System.out.println();
     }
 
-    class Player implements Runnable {
-        private String uuid;
-        private int points;
-        private Socket socket;
-        private DataInputStream input;
-        private DataOutputStream output;
-
-        public Player(Socket socket) {
-            try {
-                this.points = 0;
-                this.uuid = UUID.randomUUID().toString();
-                this.socket = socket;
-                this.input = new DataInputStream(socket.getInputStream());
-                this.output = new DataOutputStream(socket.getOutputStream());
-            } catch (IOException e) {
-                e.printStackTrace();
+    public synchronized StickType draw(Player player, int stickIndex) {
+        StickType drawnStick = null;
+        int stickCounter = 0;
+        for (int i = 0; i < tableSize; i++) {
+            if (sticks[i] != null) {
+                stickCounter++;
+            }
+            if (stickCounter == stickIndex) {
+                drawnStick = sticks[i];
+                sticks[i] = null;
+                break;
             }
         }
 
-        @Override
-        public void run() {
-            if (clientCount.incrementAndGet() > 6) {
-                denyAccess();
-            } else {
-                play();
+        for (int i = 0; i < tableSize; i++) {
+            System.out.print(sticks[i] + " ");
+        }
+        System.out.println();
+
+        for (Player p : players) {
+            if (p != player && p.getBid().equals(drawnStick)) {
+                p.inceremntPoints();
             }
         }
 
-        private void play() {
-            sendToClient("approved");
-            findFreePlace();
-            while (true) {
-                if (players[playerIndex].uuid.equals(uuid)) {
-                    // biram
-                    sendToClient("choose");
-                    var message = getFromClient();
-                    System.out.println(message.getBody());
-                } else {
-                    // pogadjam
-                    sendToClient("guess");
-                    var message = getFromClient();
-                    System.out.println(message.getBody());
-                }
+        bidsLatch = new CountDownLatch(tableSize - 1);
+        rounds--;
+        playerIndex = (playerIndex + 1) % tableSize;
+        gameLatch.countDown();
 
+        return drawnStick;
+    }
+
+    public synchronized void bid(Player player, StickType stickType) {
+        for (Player p : players) {
+            if (p == player) {
+                p.setBid(stickType);
             }
         }
+        bidsLatch.countDown();
+    }
 
-        private void findFreePlace() {
-            synchronized (players) {
-                for (int i = 0; i < tableSize; i++) {
-                    if (players[i] == null) {
-                        players[i] = this;
-                        break;
-                    }
-                }
+    public synchronized void eject(Player player) {
+        for (int i = 0; i < tableSize; i++) {
+            if (players[i] == player) {
+                players[i] = null;
             }
         }
+        shuffleSticks();
+        playerIndex = 0;
+    }
 
-        private void denyAccess() {
-            sendToClient("denied");
-        }
+    public synchronized Player currentPlayer() {
+        return players[playerIndex];
+    }
 
-        private void sendToClient(String body) {
-            Message res = new Message(body);
-            try {
-                output.writeUTF(gson.toJson(res));
-            } catch (IOException e) {
-                e.printStackTrace();
+    public synchronized Boolean giveSeat(Player player) {
+        for (int i = 0; i < tableSize; i++) {
+            if (players[i] == null) {
+                players[i] = player;
+                return true;
             }
         }
+        return false;
+    }
 
-        private ClientMessage getFromClient() {
-            ClientMessage message = null;
-            try {
-                String json = input.readUTF();
-                message = gson.fromJson(json, ClientMessage.class);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            return message;
+    public synchronized int stickCount() {
+        int counter = 0;
+        for (StickType s : sticks) {
+            if (s != null) counter++;
         }
+        return counter;
+    }
+
+    public void waitForBids() throws InterruptedException {
+        bidsLatch.await();
+    }
+
+    public void waitForFullTable() throws BrokenBarrierException, InterruptedException {
+        fullTableBarrier.await();
+    }
+
+    public synchronized int getRounds() {
+        return rounds;
+    }
+
+    public CountDownLatch getGameLatch() {
+        return gameLatch;
+    }
+
+    public synchronized void printResult() {
+        System.out.println("----------------------------------");
+        Arrays.sort(players, (a, b) -> {
+            int aPoints = (a == null ? -1 : a.getPoints());
+            int bPoints = (b == null ? -1 : b.getPoints());
+            return Integer.compare(bPoints, aPoints);
+        });
+        for (Player p : players) {
+            if (p != null) {
+                System.out.println(p.getId() + " - " + p.getPoints());
+            }
+        }
+        System.out.println("----------------------------------");
     }
 }

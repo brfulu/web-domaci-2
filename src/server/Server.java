@@ -4,43 +4,48 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
-//        [Server]Nema mesta
-//        [Server]Daj prognozu
-//        [Server]Pogodak/Promasaj
-//        [Server]Ispao si/Nisi ispao
-//        [Server]Pobedio si
-//        [Server]Izvuci stapic
-//
-//        [Client]Jeste kraci/Nije kraci
-//        [Client]Broj stapica
-
-public class Server {
+public class Server implements Runnable {
     private ServerSocket listener;
+    private int poolSize;
     private ExecutorService pool;
 
     public Server(int port, int poolSize) {
         try {
+            this.poolSize = poolSize;
             listener = new ServerSocket(port);
-            pool = Executors.newFixedThreadPool(poolSize);
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    public void start() throws IOException {
-        Game game = new Game(3, 6);
+    @Override
+    public void run() {
         while (true) {
-            pool.execute(game.createPlayer(listener.accept()));
-        }
-    }
+            try {
+                Thread.sleep(50);
+                pool = Executors.newFixedThreadPool(poolSize);
+                Game game = new Game(10, 6);
 
-    public static void main(String[] args) {
-        var server = new Server(2019, 20);
-        try {
-            server.start();
-        } catch (IOException e) {
-            e.printStackTrace();
+                Thread resultThread = new Thread(() -> {
+                    try {
+                        game.getGameLatch().await();
+                        pool.shutdownNow();
+                        game.printResult();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                });
+                resultThread.start();
+
+                while (true) {
+                    var serverThread = new ServerThread(listener.accept(), game);
+                    pool.execute(serverThread);
+                }
+            } catch (IOException | RejectedExecutionException | InterruptedException e) {
+                continue;
+            }
         }
     }
 }
